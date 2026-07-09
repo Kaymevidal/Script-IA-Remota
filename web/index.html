@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>IA Local — DeepSeek Coder</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  :root {
+    --bg: #0d1117; --panel: #161b22; --border: #30363d;
+    --user: #1f6feb; --ia: #21262d; --txt: #e6edf3; --muted: #8b949e;
+    --code-bg: #0d1117; --ok: #3fb950; --erro: #f85149;
+  }
+  body {
+    font-family: -apple-system, "Segoe UI", sans-serif;
+    background: var(--bg); color: var(--txt);
+    height: 100vh; display: flex; justify-content: center;
+  }
+  .app {
+    width: 100%; max-width: 900px; display: flex; flex-direction: column;
+    height: 100vh; border-left: 1px solid var(--border);
+    border-right: 1px solid var(--border);
+  }
+  header {
+    padding: 14px 20px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between;
+    background: var(--panel);
+  }
+  header h1 { font-size: 16px; font-weight: 600; }
+  .status { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--erro); }
+  .dot.on { background: var(--ok); }
+  .btn-limpar {
+    background: transparent; border: 1px solid var(--border); color: var(--muted);
+    padding: 4px 10px; border-radius: 6px; cursor: pointer; font-size: 12px;
+  }
+  .btn-limpar:hover { border-color: var(--erro); color: var(--erro); }
+
+  .chat { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 16px; }
+  .msg { display: flex; gap: 10px; max-width: 100%; }
+  .msg.user { flex-direction: row-reverse; }
+  .bolha {
+    padding: 12px 16px; border-radius: 12px; font-size: 14px;
+    line-height: 1.6; white-space: pre-wrap; word-wrap: break-word; max-width: 85%;
+  }
+  .msg.user .bolha { background: var(--user); color: #fff; border-bottom-right-radius: 4px; }
+  .msg.ia .bolha { background: var(--ia); border: 1px solid var(--border); border-bottom-left-radius: 4px; }
+  .bolha pre {
+    background: var(--code-bg); border: 1px solid var(--border);
+    border-radius: 8px; padding: 12px; margin: 8px 0; overflow-x: auto;
+  }
+  .bolha code { font-family: "Cascadia Code", "Fira Code", Consolas, monospace; font-size: 13px; }
+  .cursor { display: inline-block; width: 8px; height: 15px; background: var(--txt);
+            animation: blink 1s infinite; vertical-align: middle; }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  footer { padding: 16px 20px; border-top: 1px solid var(--border); background: var(--panel); }
+  .entrada { display: flex; gap: 10px; }
+  textarea {
+    flex: 1; background: var(--bg); border: 1px solid var(--border); color: var(--txt);
+    border-radius: 10px; padding: 12px; font-size: 14px; resize: none;
+    font-family: inherit; max-height: 150px; outline: none;
+  }
+  textarea:focus { border-color: var(--user); }
+  .enviar {
+    background: var(--user); color: #fff; border: none; border-radius: 10px;
+    padding: 0 20px; cursor: pointer; font-weight: 600; font-size: 14px;
+  }
+  .enviar:disabled { opacity: 0.5; cursor: not-allowed; }
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <h1>🤖 IA Local — DeepSeek Coder</h1>
+    <div style="display:flex; align-items:center; gap:14px;">
+      <span class="status"><span class="dot" id="dot"></span><span id="statusTxt">verificando…</span></span>
+      <button class="btn-limpar" onclick="limpar()">Limpar</button>
+    </div>
+  </header>
+
+  <div class="chat" id="chat"></div>
+
+  <footer>
+    <div class="entrada">
+      <textarea id="input" rows="1" placeholder="Digite sua pergunta… (Enter envia, Shift+Enter quebra linha)"></textarea>
+      <button class="enviar" id="btnEnviar" onclick="enviar()">Enviar</button>
+    </div>
+  </footer>
+</div>
+
+<script>
+const chat = document.getElementById('chat');
+const input = document.getElementById('input');
+const btn = document.getElementById('btnEnviar');
+const dot = document.getElementById('dot');
+const statusTxt = document.getElementById('statusTxt');
+
+// Status
+async function checarStatus() {
+  try {
+    const r = await fetch('/api/status');
+    const d = await r.json();
+    const ok = d.ollama === 'online' && d.modelo_disponivel;
+    dot.classList.toggle('on', ok);
+    statusTxt.textContent = ok ? d.modelo
+      : (d.ollama !== 'online' ? 'Ollama offline' : 'modelo não instalado');
+  } catch {
+    dot.classList.remove('on');
+    statusTxt.textContent = 'servidor offline';
+  }
+}
+checarStatus();
+setInterval(checarStatus, 8000);
+
+// Auto-resize textarea
+input.addEventListener('input', () => {
+  input.style.height = 'auto';
+  input.style.height = Math.min(input.scrollHeight, 150) + 'px';
+});
+input.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); enviar(); }
+});
+
+// Render de markdown simples (blocos de código)
+function renderizar(texto) {
+  const escapado = texto
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  // blocos ```lang ... ```
+  return escapado.replace(/```(\w*)\n?([\s\S]*?)```/g,
+    (_, lang, code) => `<pre><code>${code.replace(/\n$/, '')}</code></pre>`);
+}
+
+function addMensagem(tipo, texto = '') {
+  const div = document.createElement('div');
+  div.className = `msg ${tipo}`;
+  const bolha = document.createElement('div');
+  bolha.className = 'bolha';
+  bolha.innerHTML = tipo === 'ia' ? renderizar(texto) : texto;
+  div.appendChild(bolha);
+  chat.appendChild(div);
+  chat.scrollTop = chat.scrollHeight;
+  return bolha;
+}
+
+// Envio com streaming 
+let enviando = false;
+
+async function enviar() {
+  const pergunta = input.value.trim();
+  if (!pergunta || enviando) return;
+
+  enviando = true;
+  btn.disabled = true;
+  input.value = '';
+  input.style.height = 'auto';
+
+  addMensagem('user', pergunta.replace(/</g, '&lt;'));
+  const bolhaIA = addMensagem('ia', '');
+  bolhaIA.innerHTML = '<span class="cursor"></span>';
+
+  let acumulado = '';
+
+  try {
+    const resp = await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pergunta })
+    });
+
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      bolhaIA.innerHTML = '⚠️ ' + (err.erro || `Erro ${resp.status}`);
+      return;
+    }
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      const linhas = buffer.split('\n\n');
+      buffer = linhas.pop();  // guarda fragmento incompleto
+
+      for (const linha of linhas) {
+        if (!linha.startsWith('data: ')) continue;
+        const dado = JSON.parse(linha.slice(6));
+
+        if (dado.token) {
+          acumulado += dado.token;
+          bolhaIA.innerHTML = renderizar(acumulado) + '<span class="cursor"></span>';
+          chat.scrollTop = chat.scrollHeight;
+        } else if (dado.erro) {
+          bolhaIA.innerHTML = '⚠️ ' + dado.erro;
+        } else if (dado.fim) {
+          bolhaIA.innerHTML = renderizar(acumulado);  // remove cursor
+        }
+      }
+    }
+
+    if (acumulado) bolhaIA.innerHTML = renderizar(acumulado);
+
+  } catch (e) {
+    bolhaIA.innerHTML = '⚠️ Falha de conexão: ' + e.message;
+  } finally {
+    enviando = false;
+    btn.disabled = false;
+    input.focus();
+  }
+}
+
+// Limpar
+async function limpar() {
+  if (!confirm('Apagar todo o histórico?')) return;
+  await fetch('/api/limpar', { method: 'POST' });
+  chat.innerHTML = '';
+}
+</script>
+</body>
+</html>
